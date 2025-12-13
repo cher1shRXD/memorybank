@@ -150,8 +150,9 @@ struct MessageBubbleView: View {
             }
         }
         .sheet(item: $showingNoteDetail) { note in
-            NoteDetailView(note: note)
+            NoteDetailView(noteId: note.id)
                 .environmentObject(noteStore)
+                .environmentObject(GraphViewModel())
         }
     }
     
@@ -170,7 +171,7 @@ struct MessageBubbleView: View {
                             } label: {
                                 HStack(spacing: 4) {
                                     Image(systemName: "doc.text")
-                                    Text(note.title)
+                                    Text("노트")
                                         .lineLimit(1)
                                 }
                                 .font(.caption)

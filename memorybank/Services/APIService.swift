@@ -3,52 +3,39 @@ import Foundation
 import UIKit
 
 // MARK: - Request Models
-struct UserCreate: Codable {
+struct EmailRegisterRequest: Codable {
     let email: String
     let password: String
     let name: String
 }
 
-struct UserLogin: Codable {
+struct EmailLoginRequest: Codable {
     let email: String
     let password: String
+}
+
+struct GoogleAuthRequest: Codable {
+    let id_token: String
 }
 
 struct RefreshTokenRequest: Codable {
     let refresh_token: String
 }
 
-struct NoteCreate: Codable {
-    let title: String
-    let content: String
-    let subject: String?
-    let note_type: String?
-    
-    init(title: String, content: String, subject: String? = nil, note_type: String? = "note") {
-        self.title = title
-        self.content = content
-        self.subject = subject
-        self.note_type = note_type
-    }
+struct ChatRequest: Codable {
+    let message: String
 }
 
-struct NoteUpdate: Codable {
-    let title: String?
-    let content: String?
-    let subject: String?
-    let note_type: String?
+struct NoteCreateRequest: Codable {
+    let drawing_data: String?  // PencilKit drawing vector string
+    let pdf_file: String?     // Base64 encoded PDF file
+    let thumbnail: String     // Base64 encoded PNG thumbnail
 }
 
-struct QueryRequest: Codable {
-    let question: String
-    let include_graph: Bool
-    let top_k: Int
-    
-    init(question: String, include_graph: Bool = false, top_k: Int = 5) {
-        self.question = question
-        self.include_graph = include_graph
-        self.top_k = top_k
-    }
+struct NoteUpdateRequest: Codable {
+    var drawing_data: String?  // PencilKit drawing vector string
+    var pdf_file: String?     // Base64 encoded PDF file
+    var thumbnail: String?
 }
 
 // MARK: - Response Models
@@ -56,7 +43,7 @@ struct UserResponse: Codable {
     let id: UUID
     let email: String
     let name: String
-    let created_at: String
+    let created_at: String?
 }
 
 struct TokenResponse: Codable {
@@ -65,81 +52,169 @@ struct TokenResponse: Codable {
     let user: UserResponse
 }
 
-struct PaginationMeta: Codable {
-    let total: Int
-    let page: Int
-    let limit: Int
-    let total_pages: Int
+struct AccessTokenResponse: Codable {
+    let access_token: String
 }
 
-struct ConceptInNote: Codable, Identifiable {
-    let id: UUID
-    let name: String
-    let category: String?
-}
-
-struct NoteAPIResponse: Codable, Identifiable {
-    let id: UUID
-    let title: String
-    let content: String
-    let subject: String?
-    let note_type: String
-    let concepts: [ConceptInNote]?
-    let created_at: String
-    let updated_at: String?
-}
-
-struct NoteListResponse: Codable {
-    let data: [NoteAPIResponse]
-    let meta: PaginationMeta
-}
-
-struct Source: Codable, Identifiable {
+struct ChatSource: Codable, Identifiable {
     var id: UUID { note_id }
     let note_id: UUID
-    let title: String
-    let content_preview: String
-    let relevance: Double
+    let description: String
 }
 
-struct RelatedConcept: Codable, Identifiable {
-    let id: UUID
-    let name: String
-    let category: String?
-}
-
-struct QueryResponse: Codable {
+struct ChatResponse: Codable {
     let answer: String
-    let sources: [Source]
-    let related_concepts: [RelatedConcept]?
+    let sources: [ChatSource]?
 }
 
-struct QueryHistoryItem: Codable, Identifiable {
+struct ChatHistoryItem: Codable, Identifiable {
     let id: UUID
+    let note_id: UUID?
     let question: String
     let answer: String
-    let source_note_ids: [UUID]?
+    let sources: [ChatSource]?
     let created_at: String
 }
 
-struct QueryHistoryResponse: Codable {
-    let data: [QueryHistoryItem]
-    let meta: PaginationMeta
+struct ConceptItem: Codable {
+    let name: String
+    let context: String
+    let confidence: String  // "확실함"|"이해함"|"헷갈림"|"모름"
+}
+
+struct RelationItem: Codable {
+    let from: String
+    let to: String
+    let type: String  // "REQUIRES"|"CONTAINS"|"LEADS_TO"|"RELATED"
+    
+    enum CodingKeys: String, CodingKey {
+        case from
+        case to
+        case type
+    }
+}
+
+struct NoteResponse: Codable, Identifiable {
+    let id: UUID
+    let drawing_data: String?   // PencilKit drawing vector string
+    let pdf_url: String?        // PDF file URL
+    let thumbnail_url: String?
+    let description: String?
+    let concepts: [[String: Any]]?  // Dynamic JSON array
+    let relations: [[String: Any]]? // Dynamic JSON array
+    let created_at: String
+    let updated_at: String
+    
+    // Custom decoding for dynamic JSON
+    enum CodingKeys: String, CodingKey {
+        case id, drawing_data, pdf_url, thumbnail_url, description
+        case concepts, relations, created_at, updated_at
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        drawing_data = try container.decodeIfPresent(String.self, forKey: .drawing_data)
+        pdf_url = try container.decodeIfPresent(String.self, forKey: .pdf_url)
+        thumbnail_url = try container.decodeIfPresent(String.self, forKey: .thumbnail_url)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        created_at = try container.decode(String.self, forKey: .created_at)
+        updated_at = try container.decode(String.self, forKey: .updated_at)
+        
+        // Handle dynamic JSON arrays
+        if let conceptsData = try? container.decode([[String: AnyCodable]].self, forKey: .concepts) {
+            concepts = conceptsData.map { dict in
+                dict.mapValues { $0.value }
+            }
+        } else {
+            concepts = nil
+        }
+        
+        if let relationsData = try? container.decode([[String: AnyCodable]].self, forKey: .relations) {
+            relations = relationsData.map { dict in
+                dict.mapValues { $0.value }
+            }
+        } else {
+            relations = nil
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(drawing_data, forKey: .drawing_data)
+        try container.encodeIfPresent(pdf_url, forKey: .pdf_url)
+        try container.encodeIfPresent(thumbnail_url, forKey: .thumbnail_url)
+        try container.encodeIfPresent(description, forKey: .description)
+        try container.encode(created_at, forKey: .created_at)
+        try container.encode(updated_at, forKey: .updated_at)
+    }
+}
+
+struct NoteListItem: Codable, Identifiable {
+    let id: UUID
+    let thumbnail_url: String?
+    let description: String?
+    let concepts: [[String: Any]]?  // Dynamic JSON array
+    let created_at: String
+    
+    // Convenience init for creating from other sources
+    init(id: UUID, thumbnail_url: String?, description: String?, concepts: [[String: Any]]?, created_at: String) {
+        self.id = id
+        self.thumbnail_url = thumbnail_url
+        self.description = description
+        self.concepts = concepts
+        self.created_at = created_at
+    }
+    
+    // Custom decoding for dynamic JSON
+    enum CodingKeys: String, CodingKey {
+        case id, thumbnail_url, description, concepts, created_at
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        thumbnail_url = try container.decodeIfPresent(String.self, forKey: .thumbnail_url)
+        description = try container.decodeIfPresent(String.self, forKey: .description)
+        created_at = try container.decode(String.self, forKey: .created_at)
+        
+        // Handle dynamic JSON arrays
+        if let conceptsData = try? container.decode([[String: AnyCodable]].self, forKey: .concepts) {
+            concepts = conceptsData.map { dict in
+                dict.mapValues { $0.value }
+            }
+        } else {
+            concepts = nil
+        }
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        try container.encodeIfPresent(thumbnail_url, forKey: .thumbnail_url)
+        try container.encodeIfPresent(description, forKey: .description)
+        try container.encode(created_at, forKey: .created_at)
+    }
+}
+
+struct HandwritingChatResponse: Codable {
+    let question_text: String
+    let answer: String
+    let sources: [ChatSource]?
 }
 
 struct GraphNode: Codable, Identifiable {
     let id: String
-    let type: String  // "concept" or "note"
-    let label: String
-    let properties: [String: AnyCodable]?
+    let name: String
+    let type: String  // "Concept" or "Note"
 }
 
 struct GraphEdge: Codable, Identifiable {
-    var id: String { "\(source)-\(target)" }
+    var id: String { "\(source)-\(target)-\(type)" }
     let source: String
     let target: String
     let type: String
-    let weight: Double?
 }
 
 struct GraphResponse: Codable {
@@ -147,29 +222,29 @@ struct GraphResponse: Codable {
     let edges: [GraphEdge]
 }
 
-struct ConceptAPIResponse: Codable, Identifiable {
-    let id: UUID
+struct ConceptCenter: Codable {
     let name: String
-    let category: String?
-    let mention_count: Int
-    let created_at: String
+    let user_id: String
 }
 
-struct ConceptListResponse: Codable {
-    let data: [ConceptAPIResponse]
-    let meta: PaginationMeta
+struct ConnectedConcept: Codable {
+    let concept: String
+    let relation: String
+    let depth: Int
 }
 
-struct TimelineNote: Codable, Identifiable {
-    let id: UUID
-    let title: String
-    let created_at: String
+struct ConceptGraphResponse: Codable {
+    let center: ConceptCenter
+    let connected: [ConnectedConcept]
 }
 
-struct ConceptTimelineResponse: Codable {
-    let concept: ConceptAPIResponse
-    let notes: [TimelineNote]
+struct DeleteResponse: Codable {
+    let success: Bool
+    let message: String?
 }
+
+// MARK: - Empty Response
+struct EmptyResponse: Codable {}
 
 // MARK: - AnyCodable for dynamic properties
 struct AnyCodable: Codable {
@@ -208,48 +283,53 @@ struct AnyCodable: Codable {
     }
 }
 
+// MARK: - API Errors
+enum APIError: Error, LocalizedError {
+    case invalidURL
+    case invalidResponse
+    case invalidData
+    case httpError(Int)
+    case decodingError
+    case unauthorized
+    case validationError
+    
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "잘못된 URL입니다."
+        case .invalidResponse:
+            return "서버 응답이 올바르지 않습니다."
+        case .invalidData:
+            return "데이터 형식이 올바르지 않습니다."
+        case .httpError(let code):
+            return "HTTP 오류: \(code)"
+        case .decodingError:
+            return "데이터 파싱 오류입니다."
+        case .unauthorized:
+            return "인증이 필요합니다."
+        case .validationError:
+            return "입력값이 올바르지 않습니다."
+        }
+    }
+}
+
 // MARK: - API Service
 class APIService {
     static let shared = APIService()
     
-    private let baseURL = "https://rosaura-priestless-cavally.ngrok-free.dev"
+    // TODO: Update this to your actual API URL
+    // For local development: "http://localhost:8000"
+    // For production: "https://your-api-domain.com"
+    private let baseURL = "https://d579b9d85d96.ngrok-free.app"
     private let keychain = KeychainService.shared
     
     private init() {}
     
     // MARK: - Auth
-    func register(email: String, password: String, name: String) async throws -> UserResponse {
-        let body = UserCreate(email: email, password: password, name: name)
-        return try await request(
+    func register(email: String, password: String, name: String) async throws -> TokenResponse {
+        let body = EmailRegisterRequest(email: email, password: password, name: name)
+        let response: TokenResponse = try await request(
             endpoint: "/auth/register",
-            method: "POST",
-            body: body
-        )
-    }
-    
-    func login(email: String, password: String) async throws -> TokenResponse {
-        let body = UserLogin(email: email, password: password)
-        let response: TokenResponse = try await request(
-            endpoint: "/auth/login",
-            method: "POST",
-            body: body
-        )
-        
-        // 토큰 저장
-        keychain.accessToken = response.access_token
-        keychain.refreshToken = response.refresh_token
-        
-        return response
-    }
-    
-    func refreshToken() async throws -> TokenResponse {
-        guard let refreshToken = keychain.refreshToken else {
-            throw APIError.unauthorized
-        }
-        
-        let body = RefreshTokenRequest(refresh_token: refreshToken)
-        let response: TokenResponse = try await request(
-            endpoint: "/auth/refresh",
             method: "POST",
             body: body,
             requiresAuth: false
@@ -261,13 +341,69 @@ class APIService {
         return response
     }
     
+    func login(email: String, password: String) async throws -> TokenResponse {
+        let body = EmailLoginRequest(email: email, password: password)
+        let response: TokenResponse = try await request(
+            endpoint: "/auth/login",
+            method: "POST",
+            body: body,
+            requiresAuth: false
+        )
+        
+        keychain.accessToken = response.access_token
+        keychain.refreshToken = response.refresh_token
+        
+        return response
+    }
+    
+    func googleAuth(idToken: String) async throws -> TokenResponse {
+        let body = GoogleAuthRequest(id_token: idToken)
+        let response: TokenResponse = try await request(
+            endpoint: "/auth/google",
+            method: "POST",
+            body: body,
+            requiresAuth: false
+        )
+        
+        keychain.accessToken = response.access_token
+        keychain.refreshToken = response.refresh_token
+        
+        return response
+    }
+    
+    func refreshToken() async throws -> AccessTokenResponse {
+        guard let refreshToken = keychain.refreshToken else {
+            throw APIError.unauthorized
+        }
+        
+        let body = RefreshTokenRequest(refresh_token: refreshToken)
+        let response: AccessTokenResponse = try await request(
+            endpoint: "/auth/refresh",
+            method: "POST",
+            body: body,
+            requiresAuth: false
+        )
+        
+        keychain.accessToken = response.access_token
+        
+        return response
+    }
+    
     func logout() {
         keychain.clearAll()
     }
     
     // MARK: - Notes
-    func createNote(title: String, content: String, subject: String? = nil) async throws -> NoteAPIResponse {
-        let body = NoteCreate(title: title, content: content, subject: subject)
+    func createNote(drawingData: String?, pdfData: Data?, thumbnail: UIImage) async throws -> NoteResponse {
+        guard let thumbnailData = thumbnail.pngData() else {
+            throw APIError.invalidData
+        }
+        
+        let body = NoteCreateRequest(
+            drawing_data: drawingData,
+            pdf_file: pdfData?.base64EncodedString(),
+            thumbnail: thumbnailData.base64EncodedString()
+        )
         return try await request(
             endpoint: "/notes",
             method: "POST",
@@ -275,94 +411,206 @@ class APIService {
         )
     }
     
-    func listNotes(
-        page: Int = 1,
-        limit: Int = 20,
-        subject: String? = nil,
-        search: String? = nil,
-        sort: String = "-created_at"
-    ) async throws -> NoteListResponse {
-        var queryItems = [
-            URLQueryItem(name: "page", value: "\(page)"),
-            URLQueryItem(name: "limit", value: "\(limit)"),
-            URLQueryItem(name: "sort", value: sort)
-        ]
-        
-        if let subject = subject {
-            queryItems.append(URLQueryItem(name: "subject", value: subject))
-        }
-        if let search = search {
-            queryItems.append(URLQueryItem(name: "search", value: search))
-        }
-        
-        return try await request(endpoint: "/notes", queryItems: queryItems)
+    func listNotes() async throws -> [NoteListItem] {
+        return try await request(endpoint: "/notes")
     }
     
-    func getNote(id: UUID) async throws -> NoteAPIResponse {
-        return try await request(endpoint: "/notes/\(id.uuidString)")
+    func getNote(id: UUID) async throws -> NoteResponse {
+        return try await request(endpoint: "/notes/\(id.uuidString.lowercased())")
     }
     
-    func updateNote(id: UUID, title: String? = nil, content: String? = nil, subject: String? = nil) async throws -> NoteAPIResponse {
-        let body = NoteUpdate(title: title, content: content, subject: subject, note_type: nil)
+    func getPDF(noteId: UUID) async throws -> Data {
+        guard let url = URL(string: "\(baseURL)/notes/\(noteId.uuidString.lowercased())/pdf") else {
+            throw APIError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        if let token = keychain.accessToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(httpResponse.statusCode)
+        }
+        
+        return data
+    }
+    
+    func updateNote(id: UUID, drawingData: String? = nil, pdfData: Data? = nil, thumbnail: UIImage? = nil) async throws -> NoteResponse {
+        var body = NoteUpdateRequest(drawing_data: nil, pdf_file: nil, thumbnail: nil)
+        
+        if let drawingData = drawingData {
+            body.drawing_data = drawingData
+        }
+        
+        if let pdfData = pdfData {
+            body.pdf_file = pdfData.base64EncodedString()
+        }
+        
+        if let thumbnail = thumbnail, let thumbnailData = thumbnail.pngData() {
+            body.thumbnail = thumbnailData.base64EncodedString()
+        }
+        
         return try await request(
-            endpoint: "/notes/\(id.uuidString)",
+            endpoint: "/notes/\(id.uuidString.lowercased())",
             method: "PUT",
             body: body
         )
     }
     
-    func deleteNote(id: UUID) async throws {
-        let _: EmptyResponse = try await request(
-            endpoint: "/notes/\(id.uuidString)",
+    func deleteNote(id: UUID) async throws -> DeleteResponse {
+        return try await request(
+            endpoint: "/notes/\(id.uuidString.lowercased())",
             method: "DELETE"
         )
     }
     
-    // MARK: - Query (RAG)
-    func query(question: String, includeGraph: Bool = false, topK: Int = 5) async throws -> QueryResponse {
-        let body = QueryRequest(question: question, include_graph: includeGraph, top_k: topK)
+    // MARK: - Chat
+    func chat(message: String) async throws -> ChatResponse {
+        let body = ChatRequest(message: message)
         return try await request(
-            endpoint: "/query",
+            endpoint: "/chat",
             method: "POST",
             body: body
         )
     }
     
-    func getQueryHistory(page: Int = 1, limit: Int = 20) async throws -> QueryHistoryResponse {
+    func chatWithHandwriting(
+        noteId: UUID,
+        canvasImage: UIImage,
+        questionBounds: CGRect
+    ) async throws -> HandwritingChatResponse {
+        guard let url = URL(string: "\(baseURL)/chat/handwriting") else {
+            throw APIError.invalidURL
+        }
+        
+        guard let imageData = canvasImage.jpegData(compressionQuality: 0.8) else {
+            throw APIError.invalidData
+        }
+        
+        let boundary = UUID().uuidString
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        
+        if let token = keychain.accessToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        
+        var body = Data()
+        
+        // note_id
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"note_id\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(noteId.uuidString.lowercased())\r\n".data(using: .utf8)!)
+        
+        // canvas_image
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"canvas_image\"; filename=\"canvas.jpg\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(imageData)
+        body.append("\r\n".data(using: .utf8)!)
+        
+        // question bounds
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"question_bounds_x\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(questionBounds.origin.x)\r\n".data(using: .utf8)!)
+        
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"question_bounds_y\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(questionBounds.origin.y)\r\n".data(using: .utf8)!)
+        
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"question_bounds_width\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(questionBounds.width)\r\n".data(using: .utf8)!)
+        
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"question_bounds_height\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(questionBounds.height)\r\n".data(using: .utf8)!)
+        
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+        
+        request.httpBody = body
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        if httpResponse.statusCode == 401 {
+            let tokenResponse = try await refreshToken()
+            keychain.accessToken = tokenResponse.access_token
+            return try await chatWithHandwriting(noteId: noteId, canvasImage: canvasImage, questionBounds: questionBounds)
+        }
+        
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(httpResponse.statusCode)
+        }
+        
+        return try JSONDecoder().decode(HandwritingChatResponse.self, from: data)
+    }
+    
+    func getChatHistory(limit: Int = 20, offset: Int = 0) async throws -> [ChatHistoryItem] {
         let queryItems = [
-            URLQueryItem(name: "page", value: "\(page)"),
-            URLQueryItem(name: "limit", value: "\(limit)")
+            URLQueryItem(name: "limit", value: "\(limit)"),
+            URLQueryItem(name: "offset", value: "\(offset)")
         ]
-        return try await request(endpoint: "/query/history", queryItems: queryItems)
+        return try await request(endpoint: "/chat/history", queryItems: queryItems)
     }
     
     // MARK: - Graph
-    func getUserGraph(depth: Int = 2, limit: Int = 100) async throws -> GraphResponse {
-        let queryItems = [
-            URLQueryItem(name: "depth", value: "\(depth)"),
-            URLQueryItem(name: "limit", value: "\(limit)")
-        ]
-        return try await request(endpoint: "/graph", queryItems: queryItems)
+    func getGraph() async throws -> GraphResponse {
+        return try await request(endpoint: "/graph")
     }
     
-    func getConceptGraph(name: String, depth: Int = 2) async throws -> GraphResponse {
-        let queryItems = [
-            URLQueryItem(name: "depth", value: "\(depth)")
-        ]
+    func getConceptGraph(name: String) async throws -> ConceptGraphResponse {
         let encodedName = name.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? name
-        return try await request(endpoint: "/graph/concept/\(encodedName)", queryItems: queryItems)
+        return try await request(endpoint: "/graph/concept/\(encodedName)")
     }
     
-    func listConcepts(page: Int = 1, limit: Int = 20) async throws -> ConceptListResponse {
-        let queryItems = [
-            URLQueryItem(name: "page", value: "\(page)"),
-            URLQueryItem(name: "limit", value: "\(limit)")
-        ]
-        return try await request(endpoint: "/concepts", queryItems: queryItems)
+    // MARK: - Health
+    func healthCheck() async throws -> Bool {
+        let _: EmptyResponse = try await request(endpoint: "/health", requiresAuth: false)
+        return true
     }
     
-    func getConceptTimeline(conceptId: UUID) async throws -> ConceptTimelineResponse {
-        return try await request(endpoint: "/concepts/\(conceptId.uuidString)/timeline")
+    // MARK: - File URLs
+    func getThumbnailURL(for path: String) -> URL? {
+        return URL(string: "\(baseURL)\(path)")
+    }
+    
+    func getPDFURL(for path: String) -> URL? {
+        return URL(string: "\(baseURL)\(path)")
+    }
+    
+    func getFileData(from path: String) async throws -> Data {
+        guard let url = URL(string: "\(baseURL)\(path)") else {
+            throw APIError.invalidURL
+        }
+        
+        var request = URLRequest(url: url)
+        if let token = keychain.accessToken {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw APIError.invalidResponse
+        }
+        
+        guard (200...299).contains(httpResponse.statusCode) else {
+            throw APIError.httpError(httpResponse.statusCode)
+        }
+        
+        return data
     }
     
     // MARK: - Private Request Method
@@ -405,7 +653,6 @@ class APIService {
         
         switch httpResponse.statusCode {
         case 200...299:
-            // 204 No Content 처리
             if httpResponse.statusCode == 204 || data.isEmpty {
                 if let empty = EmptyResponse() as? T {
                     return empty
@@ -416,15 +663,16 @@ class APIService {
                 return try JSONDecoder().decode(T.self, from: data)
             } catch {
                 print("Decoding error: \(error)")
+                print("Response data: \(String(data: data, encoding: .utf8) ?? "nil")")
                 throw APIError.decodingError
             }
             
         case 401:
-            // 토큰 만료 시 갱신 시도
             if requiresAuth {
                 do {
-                    _ = try await refreshToken()
-                    // 재시도
+                    let tokenResponse = try await refreshToken()
+                    // Update the access token for the retry
+                    keychain.accessToken = tokenResponse.access_token
                     return try await self.request(
                         endpoint: endpoint,
                         method: method,
@@ -445,61 +693,5 @@ class APIService {
         default:
             throw APIError.httpError(httpResponse.statusCode)
         }
-    }
-}
-
-// MARK: - Empty Response
-struct EmptyResponse: Codable {}
-
-// MARK: - API Errors
-enum APIError: Error, LocalizedError {
-    case invalidURL
-    case invalidResponse
-    case httpError(Int)
-    case decodingError
-    case unauthorized
-    case validationError
-    
-    var errorDescription: String? {
-        switch self {
-        case .invalidURL:
-            return "잘못된 URL입니다."
-        case .invalidResponse:
-            return "서버 응답이 올바르지 않습니다."
-        case .httpError(let code):
-            return "HTTP 오류: \(code)"
-        case .decodingError:
-            return "데이터 파싱 오류입니다."
-        case .unauthorized:
-            return "인증이 필요합니다."
-        case .validationError:
-            return "입력값이 올바르지 않습니다."
-        }
-    }
-}
-
-// MARK: - Handwriting Question (로컬 처리용)
-struct HandwritingQuestionResponse: Codable {
-    let answer: String
-    let referencedNoteIds: [UUID]
-}
-
-extension APIService {
-    // 손글씨 질문 - Query API 활용
-    func askQuestion(
-        noteImage: UIImage,
-        questionBounds: CGRect,
-        strokeData: Data
-    ) async throws -> HandwritingQuestionResponse {
-        // 이미지에서 텍스트 추출 (실제로는 OCR 또는 서버 처리 필요)
-        // 여기서는 Query API를 사용
-        let question = "이미지 기반 질문"  // TODO: OCR 처리
-        
-        let response = try await query(question: question, includeGraph: false, topK: 5)
-        
-        return HandwritingQuestionResponse(
-            answer: response.answer,
-            referencedNoteIds: response.sources.map { $0.note_id }
-        )
     }
 }

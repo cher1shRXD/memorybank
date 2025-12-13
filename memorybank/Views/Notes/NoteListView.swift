@@ -28,9 +28,14 @@ struct NoteListView: View {
                 ToolbarItem(placement: .primaryAction) {
                     Menu {
                         Button {
-                            let note = noteStore.createNote()
-                            selectedNote = note
-                            showingEditor = true
+                            Task {
+                                if let note = await noteStore.createNote() {
+                                    await MainActor.run {
+                                        selectedNote = note
+                                        showingEditor = true
+                                    }
+                                }
+                            }
                         } label: {
                             Label("새 노트", systemImage: "pencil")
                         }
@@ -56,13 +61,13 @@ struct NoteListView: View {
             .fullScreenCover(isPresented: $showingEditor) {
                 if let note = selectedNote {
                     if note.hasPDF {
-                        PDFNoteEditorView(note: note) {
+                        PDFNoteEditorView(noteId: note.id, pdfData: note.pdfData) {
                             showingEditor = false
                             selectedNote = nil
                         }
                         .environmentObject(noteStore)
                     } else {
-                        NoteEditorView(note: note) {
+                        NoteEditorView(noteId: note.id) {
                             showingEditor = false
                             selectedNote = nil
                         }
@@ -71,8 +76,9 @@ struct NoteListView: View {
                 }
             }
             .sheet(item: $showingDetail) { note in
-                NoteDetailView(note: note)
+                NoteDetailView(noteId: note.id)
                     .environmentObject(noteStore)
+                    .environmentObject(GraphViewModel())
             }
         }
     }
@@ -87,9 +93,13 @@ struct NoteListView: View {
                 
                 if let pdfData = try? Data(contentsOf: url) {
                     let fileName = url.deletingPathExtension().lastPathComponent
-                    let note = noteStore.createNote(title: fileName, pdfData: pdfData)
-                    selectedNote = note
-                    showingEditor = true
+                    Task {
+                        let note = await noteStore.createNote(pdfData: pdfData)
+                        await MainActor.run {
+                            selectedNote = note
+                            showingEditor = true
+                        }
+                    }
                 }
             }
         case .failure(let error):
@@ -112,9 +122,14 @@ struct NoteListView: View {
             
             HStack(spacing: 12) {
                 Button {
-                    let note = noteStore.createNote()
-                    selectedNote = note
-                    showingEditor = true
+                    Task {
+                        if let note = await noteStore.createNote() {
+                            await MainActor.run {
+                                selectedNote = note
+                                showingEditor = true
+                            }
+                        }
+                    }
                 } label: {
                     Label("새 노트", systemImage: "pencil")
                         .padding(.horizontal, 16)
@@ -152,6 +167,9 @@ struct NoteListView: View {
             }
             .padding()
         }
+        .refreshable {
+            await noteStore.fetchNotes()
+        }
     }
 }
 
@@ -165,37 +183,54 @@ struct NoteCardView: View {
     @State private var showingDeleteAlert = false
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            // 썸네일
-            ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.white)
-                    .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
-                
+        Button(action: onTap) {
+            VStack(alignment: .leading, spacing: 0) {
                 thumbnailView
-            }
-            .frame(height: 160)
-            .onTapGesture(perform: onTap)
-            
-            // 정보
-            VStack(alignment: .leading, spacing: 4) {
-                HStack {
-                    if note.hasPDF {
-                        Image(systemName: "doc.fill")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
-                    Text(note.title)
-                        .font(.headline)
-                        .lineLimit(1)
-                }
+                    .frame(height: 160)
+                    .frame(maxWidth: .infinity)
+                    .background(Color.white)
                 
-                Text(note.updatedAt.formatted(date: .abbreviated, time: .shortened))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(spacing: 4) {
+                        if note.hasPDF {
+                            Image(systemName: "doc.fill")
+                                .font(.caption)
+                                .foregroundStyle(.red)
+                        }
+                        Text(note.title)
+                            .font(.headline)
+                            .lineLimit(1)
+                    }
+                    
+                    if let concepts = note.concepts, !concepts.isEmpty {
+                        HStack(spacing: 4) {
+                            ForEach(concepts.prefix(2).indices, id: \.self) { index in
+                                if let name = concepts[index]["name"] as? String {
+                                    Text(name)
+                                        .font(.caption2)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Color.blue.opacity(0.1))
+                                        .foregroundStyle(.blue)
+                                        .clipShape(Capsule())
+                                }
+                            }
+                            if concepts.count > 2 {
+                                Text("+\(concepts.count - 2)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                    
+                    Text(note.updatedAt.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 4)
             }
-            .padding(.horizontal, 4)
         }
+        .buttonStyle(CardButtonStyle())
         .contextMenu {
             Button {
                 onEdit()
@@ -227,21 +262,58 @@ struct NoteCardView: View {
                 .aspectRatio(contentMode: .fit)
                 .padding(8)
         } else if note.drawing.strokes.isEmpty {
-            VStack {
-                Image(systemName: "pencil.tip")
-                    .font(.largeTitle)
-                    .foregroundStyle(.tertiary)
+            if let thumbnailUrl = note.thumbnailUrl,
+               let url = URL(string: thumbnailUrl) {
+                AsyncImage(url: url) { phase in
+                    switch phase {
+                    case .success(let image):
+                        image
+                            .resizable()
+                            .aspectRatio(contentMode: .fit)
+                            .padding(8)
+                    case .empty:
+                        ProgressView()
+                    case .failure(_):
+                        emptyThumbnail
+                    @unknown default:
+                        emptyThumbnail
+                    }
+                }
+            } else {
+                emptyThumbnail
             }
         } else {
-            Image(uiImage: note.drawing.image(from: note.drawing.bounds, scale: 1.0))
+            Image(uiImage: note.drawing.image(from: note.drawing.bounds, scale: 2.0))
                 .resizable()
                 .aspectRatio(contentMode: .fit)
                 .padding(8)
         }
     }
+    
+    private var emptyThumbnail: some View {
+        VStack {
+            Image(systemName: "pencil.tip")
+                .font(.largeTitle)
+                .foregroundStyle(.tertiary)
+            Text("내용 없음")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+    }
 }
 
-#Preview {
-    NoteListView()
-        .environmentObject(NoteStore())
+// MARK: - Card Button Style
+struct CardButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .background(Color(.systemGray6))
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .shadow(color: .black.opacity(0.1), radius: 4, y: 2)
+            .overlay(
+                RoundedRectangle(cornerRadius: 12)
+                    .stroke(Color(.systemGray3), lineWidth: 0.5)
+            )
+            .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
+            .animation(.easeInOut(duration: 0.1), value: configuration.isPressed)
+    }
 }
