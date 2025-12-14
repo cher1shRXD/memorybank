@@ -6,6 +6,7 @@ import PDFKit
 struct PDFNoteEditorView: View {
     let noteId: UUID
     let pdfData: Data?
+    let initialTitle: String?
     let onDismiss: () -> Void
 
     @EnvironmentObject var noteStore: NoteStore
@@ -16,12 +17,15 @@ struct PDFNoteEditorView: View {
     @State private var isSaving = false
     @State private var pdfDocument: PDFDocument?
 
-    init(noteId: UUID, pdfData: Data?, onDismiss: @escaping () -> Void) {
+    init(noteId: UUID, pdfData: Data?, initialTitle: String? = nil, onDismiss: @escaping () -> Void) {
         self.noteId = noteId
         self.pdfData = pdfData
+        self.initialTitle = initialTitle
         self.onDismiss = onDismiss
     }
 
+    @State private var zoomableViewController: ZoomablePDFViewController?
+    
     var body: some View {
         VStack(spacing: 0) {
             headerView
@@ -33,7 +37,8 @@ struct PDFNoteEditorView: View {
                     pdfDocument: pdfDocument,
                     noteId: noteId,
                     currentPage: $currentPage,
-                    noteStore: noteStore
+                    noteStore: noteStore,
+                    viewController: $zoomableViewController
                 )
                 .onChange(of: currentPage) { _, _ in
                     totalPages = pdfDocument.pageCount
@@ -50,13 +55,34 @@ struct PDFNoteEditorView: View {
             if let pdfData = pdfData {
                 pdfDocument = PDFDocument(data: pdfData)
                 totalPages = pdfDocument?.pageCount ?? 0
+                title = initialTitle ?? "Untitled PDF"
+            } else {
+                // If no PDF data provided, close the editor
+                onDismiss()
             }
         }
+    }
+    
+    private func getZoomablePDFViewController() -> ZoomablePDFViewController? {
+        return zoomableViewController
     }
 
     private var headerView: some View {
         HStack {
-            Button("닫기") { onDismiss() }
+            Button("닫기") { 
+                // Save before closing
+                if let vc = getZoomablePDFViewController() {
+                    Task {
+                        let drawing = vc.getAllDrawings()
+                        await noteStore.updateNote(id: noteId, drawing: drawing)
+                        await MainActor.run {
+                            onDismiss()
+                        }
+                    }
+                } else {
+                    onDismiss()
+                }
+            }
             Spacer()
 
             if isEditingTitle {
@@ -83,11 +109,18 @@ struct PDFNoteEditorView: View {
 
             Button {
                 isSaving = true
-                // Save implementation would go here
-                // For now, just dismiss
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
-                    isSaving = false
-                    onDismiss()
+                // Save PDF drawings
+                Task {
+                    // For now, save the current page's drawing
+                    // In the future, we should save all pages
+                    if let vc = getZoomablePDFViewController() {
+                        let drawing = vc.getCurrentDrawing()
+                        await noteStore.updateNote(id: noteId, drawing: drawing)
+                    }
+                    await MainActor.run {
+                        isSaving = false
+                        onDismiss()
+                    }
                 }
             } label: {
                 if isSaving { ProgressView() }
@@ -136,6 +169,7 @@ struct ZoomablePDFCanvasView: UIViewControllerRepresentable {
     let noteId: UUID
     @Binding var currentPage: Int
     let noteStore: NoteStore
+    @Binding var viewController: ZoomablePDFViewController?
 
     func makeUIViewController(context: Context) -> ZoomablePDFViewController {
         let vc = ZoomablePDFViewController(
@@ -145,6 +179,9 @@ struct ZoomablePDFCanvasView: UIViewControllerRepresentable {
         )
         vc.pageChangeHandler = { page in
             DispatchQueue.main.async { currentPage = page }
+        }
+        DispatchQueue.main.async {
+            viewController = vc
         }
         return vc
     }
@@ -383,8 +420,18 @@ class ZoomablePDFViewController: UIViewController, PKCanvasViewDelegate, UIScrol
     func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
         guard !isUpdatingDrawing else { return }
         pageDrawingCache[currentPage] = canvasView.drawing
-        // Multi-page update not implemented yet
-        // noteStore.updatePageDrawing(id: noteId, page: currentPage, drawing: canvasView.drawing)
+        
+        // Auto-save after 2 seconds of no changes
+        NSObject.cancelPreviousPerformRequests(withTarget: self, selector: #selector(autoSave), object: nil)
+        perform(#selector(autoSave), with: nil, afterDelay: 2.0)
+    }
+    
+    @objc private func autoSave() {
+        Task {
+            // For now, save all drawings combined
+            let allDrawings = getAllDrawings()
+            await noteStore.updateNote(id: noteId, drawing: allDrawings)
+        }
     }
 
     // MARK: - UIScrollViewDelegate
@@ -451,6 +498,32 @@ class ZoomablePDFViewController: UIViewController, PKCanvasViewDelegate, UIScrol
         return true
     }
 
+    // MARK: - Public Methods
+    func getCurrentDrawing() -> PKDrawing {
+        // Save current page's drawing
+        saveCurrentDrawing()
+        
+        // For now, return only the current page's drawing
+        // In the future, we should combine all pages' drawings
+        return canvasView.drawing
+    }
+    
+    func getAllDrawings() -> PKDrawing {
+        // Save current page first
+        saveCurrentDrawing()
+        
+        // Combine all drawings from all pages
+        var combinedDrawing = PKDrawing()
+        // This is a simplified version - in reality, we'd need to position
+        // each page's drawing appropriately
+        for (_, drawing) in pageDrawingCache {
+            for stroke in drawing.strokes {
+                combinedDrawing.strokes.append(stroke)
+            }
+        }
+        return combinedDrawing
+    }
+    
     // MARK: - Cleanup
     deinit {
         saveCurrentDrawing()

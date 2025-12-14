@@ -103,7 +103,7 @@ struct NoteResponse: Codable, Identifiable {
     let concepts: [[String: Any]]?  // Dynamic JSON array
     let relations: [[String: Any]]? // Dynamic JSON array
     let created_at: String
-    let updated_at: String
+    let updated_at: String?     // Optional for create response
     
     // Custom decoding for dynamic JSON
     enum CodingKeys: String, CodingKey {
@@ -119,7 +119,8 @@ struct NoteResponse: Codable, Identifiable {
         thumbnail_url = try container.decodeIfPresent(String.self, forKey: .thumbnail_url)
         description = try container.decodeIfPresent(String.self, forKey: .description)
         created_at = try container.decode(String.self, forKey: .created_at)
-        updated_at = try container.decode(String.self, forKey: .updated_at)
+        // updated_at might be missing in create response
+        updated_at = try container.decodeIfPresent(String.self, forKey: .updated_at) ?? created_at
         
         // Handle dynamic JSON arrays
         if let conceptsData = try? container.decode([[String: AnyCodable]].self, forKey: .concepts) {
@@ -147,7 +148,7 @@ struct NoteResponse: Codable, Identifiable {
         try container.encodeIfPresent(thumbnail_url, forKey: .thumbnail_url)
         try container.encodeIfPresent(description, forKey: .description)
         try container.encode(created_at, forKey: .created_at)
-        try container.encode(updated_at, forKey: .updated_at)
+        try container.encodeIfPresent(updated_at, forKey: .updated_at)
     }
 }
 

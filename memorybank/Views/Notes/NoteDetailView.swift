@@ -6,6 +6,7 @@ struct NoteDetailView: View {
     @State private var note: NoteResponse?
     @State private var drawingData: String?
     @State private var pdfData: Data?
+    @State private var drawingCache: PKDrawing?
     
     @EnvironmentObject var noteStore: NoteStore
     @EnvironmentObject var graphViewModel: GraphViewModel
@@ -88,7 +89,7 @@ struct NoteDetailView: View {
                     }
                     .environmentObject(noteStore)
                 } else {
-                    NoteEditorView(noteId: noteId) {
+                    NoteEditorView(noteId: noteId, initialDrawing: drawingCache) {
                         showingEditor = false
                         Task {
                             await loadNote()
@@ -216,8 +217,7 @@ struct NoteDetailView: View {
     private var metaInfoView: some View {
         Group {
             if let note = note,
-               let createdDate = ISO8601DateFormatter().date(from: note.created_at),
-               let updatedDate = ISO8601DateFormatter().date(from: note.updated_at) {
+               let createdDate = ISO8601DateFormatter().date(from: note.created_at) {
                 VStack(alignment: .leading, spacing: 12) {
                     Label {
                         Text(createdDate, style: .date)
@@ -227,7 +227,9 @@ struct NoteDetailView: View {
                             .foregroundStyle(.secondary)
                     }
                     
-                    if updatedDate > createdDate {
+                    if let updatedAt = note.updated_at,
+                       let updatedDate = ISO8601DateFormatter().date(from: updatedAt),
+                       updatedDate > createdDate {
                         Label {
                             Text(updatedDate, style: .relative)
                                 .foregroundStyle(.secondary)
@@ -264,6 +266,13 @@ struct NoteDetailView: View {
             let noteResponse = try await APIService.shared.getNote(id: noteId)
             self.note = noteResponse
             self.drawingData = noteResponse.drawing_data
+            
+            // Convert drawing data to PKDrawing
+            if let drawingDataString = noteResponse.drawing_data,
+               let drawingDataDecoded = Data(base64Encoded: drawingDataString),
+               let drawing = try? PKDrawing(data: drawingDataDecoded) {
+                self.drawingCache = drawing
+            }
             
             // Load PDF if available
             if noteResponse.pdf_url != nil {

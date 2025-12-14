@@ -9,6 +9,7 @@ enum EditorMode {
 
 struct NoteEditorView: View {
     let noteId: UUID
+    let initialDrawing: PKDrawing?
     let onDismiss: () -> Void
     
     @EnvironmentObject var noteStore: NoteStore
@@ -20,6 +21,8 @@ struct NoteEditorView: View {
     @State private var titleText = ""
     @State private var currentDrawing = PKDrawing()
     @State private var note: NoteResponse?
+    @State private var lastSavedDrawing = PKDrawing()
+    @State private var saveWorkItem: DispatchWorkItem?
     
     // 질문 모드용
     @State private var drawingBeforeQuestion: PKDrawing?
@@ -27,45 +30,67 @@ struct NoteEditorView: View {
     @State private var showingAnswer = false
     @State private var isAskingQuestion = false
     
-    init(noteId: UUID, onDismiss: @escaping () -> Void) {
+    init(noteId: UUID, initialDrawing: PKDrawing? = nil, onDismiss: @escaping () -> Void) {
         self.noteId = noteId
+        self.initialDrawing = initialDrawing
         self.onDismiss = onDismiss
     }
     
     var body: some View {
-        NavigationView {
+        NavigationStack {
             VStack(spacing: 0) {
                 // 캔버스 뷰
                 CanvasViewRepresentable(
-                    canvasView: $canvasView,
-                    toolPicker: $toolPicker,
-                    initialDrawing: currentDrawing,
-                    onDrawingChanged: { drawing in
-                        currentDrawing = drawing
-                        if editorMode == .drawing {
-                            Task {
-                                // Update drawing via API
-                                let drawingData = drawing.dataRepresentation().base64EncodedString()
-                                _ = try? await APIService.shared.updateNote(
-                                    id: noteId,
-                                    drawingData: drawingData
-                                )
+                        canvasView: $canvasView,
+                        toolPicker: $toolPicker,
+                        initialDrawing: currentDrawing,
+                        onDrawingChanged: { drawing in
+                            print("[NoteEditorView] Drawing changed: \(drawing.strokes.count) strokes")
+                            currentDrawing = drawing
+                            if editorMode == .drawing {
+                                print("[NoteEditorView] In drawing mode, setting auto-save")
+                                
+                                // Cancel previous work item
+                                saveWorkItem?.cancel()
+                                
+                                // Create new work item
+                                let workItem = DispatchWorkItem {
+                                    print("[NoteEditorView] Auto-save work item executing")
+                                    Task { @MainActor in
+                                        print("[NoteEditorView] Auto-saving drawing with \(drawing.strokes.count) strokes")
+                                        await noteStore.updateNote(id: noteId, drawing: drawing)
+                                        lastSavedDrawing = drawing
+                                    }
+                                }
+                                saveWorkItem = workItem
+                                
+                                // Schedule for 2 seconds later
+                                DispatchQueue.main.asyncAfter(deadline: .now() + 2.0, execute: workItem)
                             }
                         }
-                    }
-                )
-                .background(Color.white)
+                    )
+                    .background(Color.white)
                 
                 // 하단 모드 토글
                 modeToggleView
                     .background(Color(.systemBackground))
             }
+            .background(Color(.systemBackground))
             .navigationTitle(titleText)
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
                     Button("취소") {
-                        onDismiss()
+                        print("[NoteEditorView] Cancel button pressed")
+                        // Save before closing
+                        saveWorkItem?.cancel()
+                        Task {
+                            print("[NoteEditorView] Saving on cancel")
+                            await noteStore.updateNote(id: noteId, drawing: currentDrawing)
+                            await MainActor.run {
+                                onDismiss()
+                            }
+                        }
                     }
                 }
                 
@@ -108,21 +133,53 @@ struct NoteEditorView: View {
         .sheet(isPresented: $showingAnswer) {
             answerSheet
         }
-        .task {
-            // Load note data
-            do {
-                let noteResponse = try await APIService.shared.getNote(id: noteId)
-                self.note = noteResponse
-                self.titleText = noteResponse.description ?? "Untitled"
-                
-                // Load drawing if available
-                if let drawingDataString = noteResponse.drawing_data,
-                   let drawingData = Data(base64Encoded: drawingDataString),
-                   let drawing = try? PKDrawing(data: drawingData) {
-                    self.currentDrawing = drawing
+        .onDisappear {
+            print("[NoteEditorView] View disappearing, saving...")
+            // Clean up and save when view disappears
+            saveWorkItem?.cancel()
+            // Only save if drawing has changed (check stroke count as simple comparison)
+            if currentDrawing.strokes.count != lastSavedDrawing.strokes.count {
+                Task {
+                    print("[NoteEditorView] Saving on disappear with \(currentDrawing.strokes.count) strokes")
+                    await noteStore.updateNote(id: noteId, drawing: currentDrawing)
                 }
-            } catch {
-                print("Error loading note: \(error)")
+            }
+        }
+        .task {
+            print("[NoteEditorView] Loading note with ID: \(noteId)")
+            print("[NoteEditorView] Initial drawing provided: \(initialDrawing != nil)")
+            
+            // Use initial drawing if provided (for newly created notes)
+            if let initialDrawing = initialDrawing {
+                print("[NoteEditorView] Using initial drawing")
+                self.currentDrawing = initialDrawing
+                self.titleText = "Untitled"
+            } else {
+                print("[NoteEditorView] Loading from API...")
+                // Load note data from API
+                do {
+                    let noteResponse = try await APIService.shared.getNote(id: noteId)
+                    print("[NoteEditorView] Loaded note from API: \(noteResponse.id)")
+                    self.note = noteResponse
+                    self.titleText = noteResponse.description ?? "Untitled"
+                    
+                    // Load drawing if available
+                    if let drawingDataString = noteResponse.drawing_data,
+                       let drawingData = Data(base64Encoded: drawingDataString),
+                       let drawing = try? PKDrawing(data: drawingData) {
+                        self.currentDrawing = drawing
+                        print("[NoteEditorView] Loaded drawing from API")
+                    }
+                } catch {
+                    print("[NoteEditorView] Error loading note: \(error)")
+                    // If loading fails and no initial drawing, close the editor
+                    if initialDrawing == nil {
+                        print("[NoteEditorView] Closing editor due to load failure")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                            onDismiss()
+                        }
+                    }
+                }
             }
         }
     }
@@ -196,11 +253,7 @@ struct NoteEditorView: View {
                 canvasView.drawing = originalDrawing
                 currentDrawing = originalDrawing
                 Task {
-                    let drawingData = originalDrawing.dataRepresentation().base64EncodedString()
-                    _ = try? await APIService.shared.updateNote(
-                        id: noteId,
-                        drawingData: drawingData
-                    )
+                    await noteStore.updateNote(id: noteId, drawing: originalDrawing)
                 }
             }
         }
@@ -249,11 +302,7 @@ struct NoteEditorView: View {
                     canvasView.drawing = originalDrawing
                     self.currentDrawing = originalDrawing
                     Task {
-                        let drawingData = originalDrawing.dataRepresentation().base64EncodedString()
-                        _ = try? await APIService.shared.updateNote(
-                            id: noteId,
-                            drawingData: drawingData
-                        )
+                        await noteStore.updateNote(id: noteId, drawing: originalDrawing)
                     }
                     editorMode = .drawing
                     isAskingQuestion = false
@@ -268,18 +317,14 @@ struct NoteEditorView: View {
     }
     
     private func saveNote() {
+        print("[NoteEditorView] saveNote called")
         isSaving = true
+        saveWorkItem?.cancel()
 
         Task {
-            // 서버에 저장
-            let drawingData = currentDrawing.dataRepresentation().base64EncodedString()
-            let thumbnail = currentDrawing.image(from: currentDrawing.bounds, scale: UIScreen.main.scale)
-            
-            _ = try? await APIService.shared.updateNote(
-                id: noteId,
-                drawingData: drawingData,
-                thumbnail: thumbnail
-            )
+            print("[NoteEditorView] Saving with complete button")
+            // Save through noteStore to maintain consistency
+            await noteStore.updateNote(id: noteId, drawing: currentDrawing)
 
             await MainActor.run {
                 isSaving = false
@@ -329,13 +374,14 @@ struct CanvasViewRepresentable: UIViewRepresentable {
         }
         
         func canvasViewDrawingDidChange(_ canvasView: PKCanvasView) {
+            print("[Coordinator] canvasViewDrawingDidChange called: \(canvasView.drawing.strokes.count) strokes")
             onDrawingChanged?(canvasView.drawing)
         }
     }
 }
 
 #Preview {
-    NoteEditorView(noteId: UUID()) {
+    NoteEditorView(noteId: UUID(), initialDrawing: PKDrawing()) {
         
     }
     .environmentObject(NoteStore())

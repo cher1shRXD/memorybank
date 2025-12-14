@@ -38,21 +38,39 @@ class NoteStore: ObservableObject {
     
     // MARK: - Create Note
     func createNote(drawing: PKDrawing = PKDrawing(), pdfData: Data? = nil) async -> Note? {
+        print("[NoteStore] Creating new note...")
         let note = Note(drawing: drawing, pdfData: pdfData)
         
         await MainActor.run {
             notes.insert(note, at: 0)
         }
         
-        // Save to server immediately
-        await saveNoteToServer(note)
+        print("[NoteStore] Saving note to server...")
+        // Save to server and get updated note with server data
+        if let updatedNote = await saveNoteToServer(note) {
+            print("[NoteStore] Note saved successfully with ID: \(updatedNote.id)")
+            return updatedNote
+        }
         
-        return note
+        print("[NoteStore] Failed to save note to server")
+        // If server save failed, return nil to prevent opening editor
+        await MainActor.run {
+            if let index = notes.firstIndex(where: { $0.id == note.id }) {
+                notes.remove(at: index)
+            }
+        }
+        
+        return nil
     }
     
     // MARK: - Update Note (Save to Server)
     func updateNote(id: UUID, drawing: PKDrawing) async {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = notes.firstIndex(where: { $0.id == id }) else { 
+            print("[NoteStore] updateNote - Note not found: \(id)")
+            return 
+        }
+        
+        print("[NoteStore] updateNote - Updating note: \(id), strokes: \(drawing.strokes.count)")
         
         // Update local cache
         await MainActor.run {
@@ -60,25 +78,24 @@ class NoteStore: ObservableObject {
             notes[index].updatedAt = Date()
         }
         
-        // Save or update on server
-        if notes[index].thumbnailUrl == nil {
-            // New note - create on server
-            await saveNoteToServer(notes[index])
-        } else {
-            // Existing note - update on server
-            await updateNoteOnServer(id: id, drawing: drawing)
-        }
+        // Always update on server (both new and existing notes should have been created already)
+        await updateNoteOnServer(id: id, drawing: drawing)
     }
     
     // MARK: - Save Note to Server
-    func saveNoteToServer(_ note: Note) async {
-        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return }
+    func saveNoteToServer(_ note: Note) async -> Note? {
+        guard let index = notes.firstIndex(where: { $0.id == note.id }) else { return nil }
         
         await MainActor.run { isLoading = true }
         
         do {
             // Generate thumbnail
+            print("[NoteStore] Generating thumbnail...")
             let thumbnail = renderThumbnail(from: note.drawing)
+            
+            print("[NoteStore] Calling API to create note...")
+            print("[NoteStore] Drawing data: \(note.drawingData?.prefix(50) ?? "nil")")
+            print("[NoteStore] PDF data: \(note.pdfData != nil ? "Present" : "None")")
             
             // Send to server
             let response = try await api.createNote(
@@ -87,48 +104,77 @@ class NoteStore: ObservableObject {
                 thumbnail: thumbnail
             )
             
+            print("[NoteStore] API Response received: \(response.id)")
+            
+            // Update with server response
+            var updatedNote = Note(from: response)
+            // Preserve local drawing cache and PDF data
+            updatedNote.pdfData = note.pdfData
+            
+            // IMPORTANT: Preserve the original drawing data and cache
+            if note.drawingData != nil {
+                updatedNote.drawingData = note.drawingData
+            }
+            // Also set the drawing directly to preserve the PKDrawing object
+            updatedNote.drawing = note.drawing
+            
+            print("[NoteStore] Updated note - drawing data: \(updatedNote.drawingData != nil), drawing strokes: \(updatedNote.drawing.strokes.count)")
+            
             await MainActor.run {
-                // Update with server response
-                var updatedNote = Note(from: response)
-                // Preserve local drawing cache
-                updatedNote.drawingCache = note.drawing
-                updatedNote.pdfData = note.pdfData
                 notes[index] = updatedNote
                 isLoading = false
             }
+            
+            return updatedNote
         } catch {
+            print("[NoteStore] Error saving note to server: \(error)")
             await MainActor.run {
                 errorMessage = error.localizedDescription
                 isLoading = false
             }
+            return nil
         }
     }
     
     // MARK: - Update Existing Note
     func updateNoteOnServer(id: UUID, drawing: PKDrawing) async {
-        guard let index = notes.firstIndex(where: { $0.id == id }) else { return }
+        guard let index = notes.firstIndex(where: { $0.id == id }) else { 
+            print("[NoteStore] updateNoteOnServer - Note not found: \(id)")
+            return 
+        }
+        
+        print("[NoteStore] updateNoteOnServer - Starting update for: \(id)")
         
         do {
             // Generate thumbnail
             let thumbnail = renderThumbnail(from: drawing)
             
+            // Convert drawing to base64 string
+            let drawingData = drawing.dataRepresentation().base64EncodedString()
+            
+            print("[NoteStore] updateNoteOnServer - Drawing data size: \(drawingData.count)")
+            
             // Server update
             let response = try await api.updateNote(
                 id: id,
-                drawingData: notes[index].drawingData,
+                drawingData: drawingData,  // Use the new drawing data
                 pdfData: nil,  // Don't re-upload PDF
                 thumbnail: thumbnail
             )
+            
+            print("[NoteStore] updateNoteOnServer - Server response received")
             
             await MainActor.run {
                 // Update with server response
                 var updatedNote = Note(from: response)
                 // Preserve local data
-                updatedNote.drawingCache = drawing
+                updatedNote.drawing = drawing  // Set the drawing directly
                 updatedNote.pdfData = notes[index].pdfData
                 notes[index] = updatedNote
+                print("[NoteStore] updateNoteOnServer - Local note updated")
             }
         } catch {
+            print("[NoteStore] updateNoteOnServer - Error: \(error)")
             await MainActor.run {
                 errorMessage = error.localizedDescription
             }
@@ -220,16 +266,17 @@ class NoteStore: ObservableObject {
                 thumbnail: thumbnail
             )
             
+            var updatedNote = Note(from: response)
+            updatedNote.pdfData = pdfData
+            
             await MainActor.run {
                 if let index = notes.firstIndex(where: { $0.id == note.id }) {
-                    var updatedNote = Note(from: response)
-                    updatedNote.pdfData = pdfData
                     notes[index] = updatedNote
                 }
                 isLoading = false
             }
             
-            return note
+            return updatedNote
         } catch {
             await MainActor.run {
                 // Remove the note on failure

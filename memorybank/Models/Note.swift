@@ -91,7 +91,7 @@ struct Note: Identifiable, Codable {
         self.relations = nil
         self.createdAt = Date()
         self.updatedAt = Date()
-        // Don't store drawingCache
+        // Convert the drawing to data
         self.drawingData = Self.convertDrawingToVectorString(drawing)
         self.title = ""  // Default title
     }
@@ -110,7 +110,11 @@ struct Note: Identifiable, Codable {
         // Parse dates
         let formatter = ISO8601DateFormatter()
         self.createdAt = formatter.date(from: apiResponse.created_at) ?? Date()
-        self.updatedAt = formatter.date(from: apiResponse.updated_at) ?? Date()
+        if let updated_at = apiResponse.updated_at {
+            self.updatedAt = formatter.date(from: updated_at) ?? self.createdAt
+        } else {
+            self.updatedAt = self.createdAt
+        }
         
         // drawingCache is computed
         self.title = apiResponse.description ?? "Untitled"

@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 struct NoteListView: View {
     @EnvironmentObject var noteStore: NoteStore
     @State private var selectedNote: Note?
-    @State private var showingEditor = false
+    @State private var editingNote: Note?  // fullScreenCover를 위한 별도 상태
     @State private var showingFilePicker = false
     @State private var showingDetail: Note?
     
@@ -29,11 +29,19 @@ struct NoteListView: View {
                     Menu {
                         Button {
                             Task {
+                                print("[NoteListView] Creating new note...")
                                 if let note = await noteStore.createNote() {
+                                    print("[NoteListView] Note created: \(note.id)")
+                                    print("[NoteListView] Note has drawing data: \(note.drawingData != nil)")
+                                    print("[NoteListView] Note drawing: \(note.drawing.strokes.count) strokes")
                                     await MainActor.run {
-                                        selectedNote = note
-                                        showingEditor = true
+                                        // Ensure no other sheet is shown
+                                        showingDetail = nil
+                                        editingNote = note  // Use editingNote for fullScreenCover
+                                        print("[NoteListView] Editing note set, showing editor...")
                                     }
+                                } else {
+                                    print("[NoteListView] Failed to create note")
                                 }
                             }
                         } label: {
@@ -58,21 +66,24 @@ struct NoteListView: View {
             ) { result in
                 handlePDFImport(result)
             }
-            .fullScreenCover(isPresented: $showingEditor) {
-                if let note = selectedNote {
-                    if note.hasPDF {
-                        PDFNoteEditorView(noteId: note.id, pdfData: note.pdfData) {
-                            showingEditor = false
-                            selectedNote = nil
-                        }
-                        .environmentObject(noteStore)
-                    } else {
-                        NoteEditorView(noteId: note.id) {
-                            showingEditor = false
-                            selectedNote = nil
-                        }
-                        .environmentObject(noteStore)
+            .fullScreenCover(item: $editingNote) { note in
+                if note.hasPDF {
+                    PDFNoteEditorView(
+                        noteId: note.id, 
+                        pdfData: note.pdfData,
+                        initialTitle: note.title
+                    ) {
+                        editingNote = nil
                     }
+                    .environmentObject(noteStore)
+                } else {
+                    NoteEditorView(
+                        noteId: note.id,
+                        initialDrawing: note.drawing
+                    ) {
+                        editingNote = nil
+                    }
+                    .environmentObject(noteStore)
                 }
             }
             .sheet(item: $showingDetail) { note in
@@ -96,8 +107,9 @@ struct NoteListView: View {
                     Task {
                         let note = await noteStore.createNote(pdfData: pdfData)
                         await MainActor.run {
-                            selectedNote = note
-                            showingEditor = true
+                            // Ensure no other sheet is shown
+                            showingDetail = nil
+                            editingNote = note
                         }
                     }
                 }
@@ -123,11 +135,16 @@ struct NoteListView: View {
             HStack(spacing: 12) {
                 Button {
                     Task {
+                        print("[NoteListView-Empty] Creating new note...")
                         if let note = await noteStore.createNote() {
+                            print("[NoteListView-Empty] Note created: \(note.id)")
+                            print("[NoteListView-Empty] Note has drawing data: \(note.drawingData != nil)")
                             await MainActor.run {
-                                selectedNote = note
-                                showingEditor = true
+                                showingDetail = nil
+                                editingNote = note
                             }
+                        } else {
+                            print("[NoteListView-Empty] Failed to create note")
                         }
                     }
                 } label: {
@@ -156,8 +173,7 @@ struct NoteListView: View {
                     NoteCardView(note: note) {
                         showingDetail = note
                     } onEdit: {
-                        selectedNote = note
-                        showingEditor = true
+                        editingNote = note
                     } onDelete: {
                         withAnimation {
                             noteStore.deleteNote(id: note.id)
